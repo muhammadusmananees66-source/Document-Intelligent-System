@@ -40,3 +40,8 @@ dependencies = [
     "transformers>=5.12.1",
     "wandb>=0.28.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
