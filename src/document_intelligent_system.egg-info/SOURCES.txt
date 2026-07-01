@@ -1,0 +1,10 @@
+README.md
+pyproject.toml
+src/__init__.py
+src/common/__init__.py
+src/common/exceptions.py
+src/document_intelligent_system.egg-info/PKG-INFO
+src/document_intelligent_system.egg-info/SOURCES.txt
+src/document_intelligent_system.egg-info/dependency_links.txt
+src/document_intelligent_system.egg-info/requires.txt
+src/document_intelligent_system.egg-info/top_level.txt
