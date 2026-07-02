@@ -473,3 +473,465 @@ asyncio.run(test_edge_cases())
    27  history
    28  history | less
    29  history >> commands.txt
+    1  uv run pytest tests/unit/test_cache.py -v
+    2  docker ps | grep redis
+    3  docker run -d --name redis -p 6379:6379 redis:7-alpine
+    4  docker ps | grep redis
+    5  docker exec -it redis redis-cli ping
+    6  docker-compose up -d redis
+    7  cat > docker-compose.redis.yml << 'EOF'
+version: '3.8'
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+EOF
+
+    8  docker-compose -f docker-compose.redis.yml up -d
+    9  uv run pytest tests/unit/test_cache.py -v
+   10  docker ps | grep redis
+   11  uv run python -c "
+import asyncio
+import json
+from src.serving.cache import InferenceCache
+
+async def test_cache_operations():
+    cache = InferenceCache(redis_host='localhost', redis_port=6379)
+    await cache.initialize()
+    
+    print('📋 Testing cache operations...')
+    
+    # Test set and get
+    test_key = 'test_content'
+    test_value = {'prediction': 42, 'confidence': 0.95}
+    
+    await cache.set(test_key, test_value)
+    print('✅ Set operation successful')
+    
+    result = await cache.get(test_key)
+    print(f'✅ Get operation successful: {result}')
+    assert result == test_value
+    
+    # Test cache miss
+    miss = await cache.get('non_existent')
+    print(f'✅ Cache miss returns None: {miss is None}')
+    
+    # Test stats
+    stats = await cache.get_stats()
+    print(f'✅ Stats: {stats}')
+    
+    # Test clear
+    await cache.clear()
+    print('✅ Cache cleared')
+    
+    # Test close
+    await cache.close()
+    print('✅ Connection closed')
+    
+    print('\\n🎉 All cache operations passed!')
+
+asyncio.run(test_cache_operations())
+"
+   12  uv run python -c "
+import asyncio
+from src.serving.cache import InferenceCache
+from src.common.circuit_breaker import CircuitBreakerConfig
+
+async def test_circuit_breaker():
+    # Create cache with circuit breaker
+    cache = InferenceCache(redis_host='localhost', redis_port=6379)
+    
+    # Check circuit breaker is configured
+    assert cache.circuit_breaker is not None
+    assert cache.circuit_breaker.name == 'redis-cache'
+    print(f'✅ Circuit breaker configured: {cache.circuit_breaker.name}')
+    
+    # Test with Redis down (simulate by using wrong port)
+    bad_cache = InferenceCache(redis_host='localhost', redis_port=9999)
+    try:
+        await bad_cache.initialize()
+        print('❌ Should have failed')
+    except Exception as e:
+        print(f'✅ Circuit breaker catches Redis errors: {e}')
+    
+    print('✅ Circuit breaker test passed!')
+
+asyncio.run(test_circuit_breaker())
+"
+   13  uv run python -c "
+import asyncio
+from src.serving.cache import InferenceCache
+
+async def test_concurrent():
+    cache = InferenceCache(redis_host='localhost', redis_port=6379)
+    await cache.initialize()
+    
+    print('📋 Testing concurrent access...')
+    
+    async def worker(i):
+        key = f'concurrent_{i}'
+        value = {'id': i, 'data': f'test_{i}'}
+        await cache.set(key, value)
+        result = await cache.get(key)
+        return result['id'] == i
+    
+    # Run 50 concurrent operations
+    tasks = [worker(i) for i in range(50)]
+    results = await asyncio.gather(*tasks)
+    
+    success = sum(results)
+    print(f'✅ {success}/50 concurrent operations succeeded')
+    
+    await cache.close()
+
+asyncio.run(test_concurrent())
+"
+   14  uv run python -c "
+import asyncio
+from src.serving.cache import InferenceCache
+
+async def test_eviction():
+    # Small cache to test eviction
+    cache = InferenceCache(
+        redis_host='localhost',
+        redis_port=6379,
+        max_size=5,
+        ttl_seconds=10
+    )
+    await cache.initialize()
+    
+    print('📋 Testing LRU eviction...')
+    
+    # Fill cache beyond max
+    for i in range(10):
+        await cache.set(f'key_{i}', {'value': i})
+        print(f'  Set key_{i}')
+    
+    # Check cache size (should be limited)
+    stats = await cache.get_stats()
+    print(f'✅ Cache size: {stats[\"size\"]} (max: {stats[\"max_size\"]})')
+    
+    # Some keys should have been evicted
+    # Check if first key is gone
+    result = await cache.get('key_0')
+    print(f'✅ key_0 exists: {result is not None} (should be False if evicted)')
+    
+    await cache.close()
+
+asyncio.run(test_eviction())
+"
+   15  uv run python -c "
+import asyncio
+from src.serving.cache import InferenceCache
+
+async def test_ttl():
+    cache = InferenceCache(
+        redis_host='localhost',
+        redis_port=6379,
+        ttl_seconds=2
+    )
+    await cache.initialize()
+    
+    print('📋 Testing TTL expiration...')
+    
+    # Set a value
+    await cache.set('ttl_test', {'data': 'expires_soon'})
+    print('✅ Set value with 2s TTL')
+    
+    # Get immediately
+    result = await cache.get('ttl_test')
+    print(f'✅ Immediate get: {result is not None}')
+    
+    # Wait for expiration
+    await asyncio.sleep(3)
+    
+    # Should be expired
+    result = await cache.get('ttl_test')
+    print(f'✅ After 3s: {result is None} (expired)')
+    
+    await cache.close()
+
+asyncio.run(test_ttl())
+"
+   16  uv run python -c "
+import asyncio
+from src.serving.cache import InferenceCache
+
+async def test_edge_cases():
+    cache = InferenceCache(redis_host='localhost', redis_port=6379)
+    await cache.initialize()
+    
+    print('📋 Testing edge cases...')
+    
+    # Test empty content
+    await cache.set('', {'empty': True})
+    result = await cache.get('')
+    print(f'✅ Empty key: {result is not None}')
+    
+    # Test large content
+    large_content = 'a' * 10000
+    await cache.set(large_content, {'large': True})
+    result = await cache.get(large_content)
+    print(f'✅ Large content: {result is not None}')
+    
+    # Test special characters
+    special = '!@#$%^&*()_+'
+    await cache.set(special, {'special': True})
+    result = await cache.get(special)
+    print(f'✅ Special chars: {result is not None}')
+    
+    # Test Unicode
+    unicode_text = '🚀 Python 🐍 测试'
+    await cache.set(unicode_text, {'unicode': True})
+    result = await cache.get(unicode_text)
+    print(f'✅ Unicode: {result is not None}')
+    
+    await cache.close()
+    print('✅ All edge cases passed!')
+
+asyncio.run(test_edge_cases())
+"
+   17  git status
+   18  git add .
+   19  git status
+   20  git commit -m "feat: add Redis cache layer with tests
+
+- Add Redis cache implementation
+- Add Docker Compose for Redis
+- Add cache verification script
+- Add comprehensive unit tests
+"
+   21  git push
+   22  history > commands.txt
+   23  cat command.txt
+   24  cat commands.txt
+   25  code commands.txt
+   26  rm -rf terminal-session.log
+   27  history
+   28  history | less
+   29  history >> commands.txt
+   30  git add .
+   31  git status
+   32  git commit -m "added commands.txt"
+   33  git push
+   34  mkdir -p src/serving && touch src/serving/inference.py
+   35  python -m py_compile src/serving/inference.py
+   36  uv run python -c "
+from src.serving.inference import ModelInference, InferenceRequest, InferenceResponse
+print('✅ All inference imports work!')
+print(f'   ModelInference: {ModelInference.__name__}')
+print(f'   InferenceRequest: {InferenceRequest.__name__}')
+print(f'   InferenceResponse: {InferenceResponse.__name__}')
+"
+   37  uv run python -c "
+from src.serving.inference import ModelInference, InferenceRequest, InferenceResponse
+print('✅ All inference imports work!')
+print(f'   ModelInference: {ModelInference.__name__}')
+print(f'   InferenceRequest: {InferenceRequest.__name__}')
+print(f'   InferenceResponse: {InferenceResponse.__name__}')
+"
+   38  uv pip show transformers
+   39  uv run python -c "import transformers; print(transformers.__version__)"
+   40  uv run python -c "
+import transformers
+print(dir(transformers))
+"
+   41  uv run python -c "
+try:
+    from transformers import AutoTokenizer
+    print('✅ AutoTokenizer found')
+except ImportError as e:
+    print(f'❌ AutoTokenizer import failed: {e}')
+"
+   42  ls -la .venv/lib/python3.10/site-packages/transformers/
+   43  uv run python -c "
+import transformers
+print('Transformers modules:')
+for item in dir(transformers):
+    if not item.startswith('_'):
+        print(f'  - {item}')
+"
+   44  uv run python -c "
+try:
+    from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+    print('✅ tokenization_utils_base found')
+except ImportError as e:
+    print(f'❌ {e}')
+"
+   45  uv run python -c "
+try:
+    from transformers.tokenization_auto import AutoTokenizer
+    print('✅ AutoTokenizer found in tokenization_auto')
+except ImportError as e:
+    print(f'❌ {e}')
+"
+   46  uv run python -c "
+import transformers
+import os
+import inspect
+
+# Check what's in the package
+print('Transformers package location:', transformers.__path__)
+
+# List all files in the transformers directory
+import subprocess
+result = subprocess.run(['ls', '-la', transformers.__path__[0]], capture_output=True, text=True)
+print(result.stdout[:500])
+"
+   47  uv run python -c "
+from src.serving.inference import ModelInference, InferenceRequest, InferenceResponse
+print('✅ All inference imports work!')
+"
+   48  uv run python -c "
+from src.serving.config import ServingConfig
+from src.serving.inference import ModelInference
+
+config = ServingConfig()
+inference = ModelInference(config)
+print('✅ ModelInference created successfully!')
+print(f'   Device: {inference.device}')
+print(f'   Labels: {inference.labels}')
+"
+   49  # Test loading and prediction
+   50  uv run python -c "
+import asyncio
+from src.serving.config import ServingConfig
+from src.serving.inference import ModelInference
+
+async def test():
+    config = ServingConfig()
+    inference = ModelInference(config)
+    await inference.load()
+    
+    result = await inference.predict('This is a test document')
+    print(f'✅ Prediction: {result.label} (confidence: {result.confidence})')
+    print(f'   Document ID: {result.document_id}')
+    print(f'   Latency: {result.latency_ms:.2f}ms')
+    print(f'   Mock Mode: {inference._mock_mode}')
+
+asyncio.run(test())
+"
+   51  uv run python -c "
+from src.serving.inference import ModelInference, InferenceRequest, InferenceResponse
+print('✅ All inference imports work!')
+print(f'   ModelInference: {ModelInference.__name__}')
+print(f'   InferenceRequest: {InferenceRequest.__name__}')
+print(f'   InferenceResponse: {InferenceResponse.__name__}')
+"
+   52  uv run python -c "
+import asyncio
+from unittest.mock import Mock, patch, AsyncMock
+from src.serving.inference import ModelInference
+from src.serving.config import ServingConfig
+
+async def test_mock():
+    config = ServingConfig()
+    inference = ModelInference(config)
+    
+    # Test dataclass
+    req = InferenceRequest(content='test doc')
+    print(f'✅ Request created: {req.document_id}')
+    
+    # Test response
+    resp = InferenceResponse(
+        document_id='test',
+        prediction=0,
+        label='business',
+        confidence=0.95,
+        probabilities=[0.95, 0.02, 0.01, 0.01, 0.01],
+        latency_ms=10.5,
+        model_version='1.0.0',
+        timestamp='2024-01-01T00:00:00'
+    )
+    print(f'✅ Response created: {resp.label}')
+    
+    print('✅ All dataclasses work!')
+
+asyncio.run(test_mock())
+"
+   53  source .venv/bin/activate
+   54  #Test Inference Request/Response Models                                                                                                                     uv run python -c "
+   55  from src.serving.inference import InferenceRequest, InferenceResponse
+   56  import uuid
+   57  # Test InferenceRequest
+   58  req1 = InferenceRequest(content='test document')
+   59  print(f'✅ Request auto-generated ID: {req1.document_id}')
+   60  req2 = InferenceRequest(content='test', document_id='custom-123')
+   61  print(f'✅ Request custom ID: {req2.document_id}')
+   62  # Test InferenceResponse
+   63  resp = InferenceResponse(
+   64  )
+   65  print(f'✅ Response with cache_hit: {resp.cache_hit}')
+   66  print(f'   Prediction: {resp.prediction} -> {resp.label} ({resp.confidence:.2%})')
+   67  "
+   68  uv run python -c "
+from src.serving.inference import InferenceRequest, InferenceResponse
+import uuid
+
+# Test InferenceRequest
+req1 = InferenceRequest(content='test document')
+print(f'✅ Request auto-generated ID: {req1.document_id}')
+
+req2 = InferenceRequest(content='test', document_id='custom-123')
+print(f'✅ Request custom ID: {req2.document_id}')
+
+# Test InferenceResponse
+resp = InferenceResponse(
+    document_id='test-123',
+    prediction=2,
+    label='technical',
+    confidence=0.88,
+    probabilities=[0.1, 0.02, 0.88, 0.0, 0.0],
+    latency_ms=15.2,
+    model_version='1.0.0',
+    timestamp='2024-01-01T00:00:00',
+    cache_hit=True
+)
+print(f'✅ Response with cache_hit: {resp.cache_hit}')
+print(f'   Prediction: {resp.prediction} -> {resp.label} ({resp.confidence:.2%})')
+"
+   69  mkdir -p tests/unit && touch tests/unit/test_inference.py
+   70  """Unit tests for inference module"""
+   71  import pytest
+   72  from src.serving.config import ServingConfig
+   73  from src.serving.inference import ModelInference, InferenceRequest, InferenceResponse
+   74  class TestInference:
+   75  uv run pytest tests/unit/test_inference.py -v
+   76  uv run pytest tests/unit/ -v
+   77  mkdir -p scripts && touch scripts/test_inference_performance.py
+   78  uv run python scripts/test_inference_performance.py
+   79  uv run python-m  scripts/test_inference_performance.py
+   80  uv run python -m scripts.test_inference_performance
+   81  uv run python -c "
+from src.serving.inference import INFERENCE_LATENCY, INFERENCE_COUNT, BATCH_SIZE
+from prometheus_client import generate_latest
+
+print('📊 Prometheus Metrics:')
+print(f'   INFERENCE_LATENCY: {INFERENCE_LATENCY._name}')
+print(f'   INFERENCE_COUNT: {INFERENCE_COUNT._name}')
+print(f'   BATCH_SIZE: {BATCH_SIZE._name}')
+
+# Generate sample metrics
+INFERENCE_COUNT.labels(model_version='latest', status='success').inc()
+metrics = generate_latest()
+print(f'✅ Metrics generated: {len(metrics)} bytes')
+"
+   82  # Run the enhanced test
+   83  PYTHONPATH=. uv run python scripts/test_inference_performance.py
+   84  uv run python -c "
+from src.serving.inference import INFERENCE_LATENCY, INFERENCE_COUNT, BATCH_SIZE
+from prometheus_client import generate_latest
+
+print('📊 Prometheus Metrics:')
+print(f'   INFERENCE_LATENCY: {INFERENCE_LATENCY._name}')
+print(f'   INFERENCE_COUNT: {INFERENCE_COUNT._name}')
+print(f'   BATCH_SIZE: {BATCH_SIZE._name}')
+
+# Generate sample metrics
+INFERENCE_COUNT.labels(model_version='latest', status='success').inc()
+metrics = generate_latest()
+print(f'✅ Metrics generated: {len(metrics)} bytes')
+"
+   85  history >> commands.txt
